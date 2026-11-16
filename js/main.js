@@ -26,7 +26,9 @@
   // 접힌 모양 썸네일
   function paintThumbs(root) {
     root.querySelectorAll('canvas[data-shape]').forEach((c) => {
-      const shape = c.dataset.shape === 'guide' ? G.fold.guideShape(G.findModel(c.dataset.s, c.dataset.m)) : (app.crafts.find((k) => k.id === c.dataset.shape) || {}).shape;
+      const craft = app.crafts.find((k) => k.id === c.dataset.shape);
+      // 날개를 접은 비행기는 날개를 편(날아가는) 모습으로 보여 준다
+      const shape = c.dataset.shape === 'guide' ? G.fold.guideShape(G.findModel(c.dataset.s, c.dataset.m)) : craft ? (craft.section === 'plane' ? G.flightShape(craft) : craft.shape) : null;
       if (!shape) return;
       const r = window.devicePixelRatio || 1, w = c.clientWidth || 110, h = c.clientHeight || 80;
       c.width = w * r; c.height = h * r;
@@ -197,7 +199,7 @@
         <canvas data-shape="${craft.id}" data-c="${color}"></canvas>
         <input id="craftName" maxlength="14" value="${G.esc(craft.name)}" aria-label="작품 이름">
         ${bars(P.bars)}
-        <div class="tip">💡 ${opened ? (wings.length < 2 ? '날개가 한쪽만 접혔어요. 뒤집어서 반대쪽도 접으면 좋아요. ' : '날개를 양쪽으로 펴서 날려요. ') : ''}${P.tip}</div>
+        <div class="tip">💡 ${opened ? (wings.length < 2 ? '날개가 한쪽만 접혔어요. 뒤집어서 반대쪽도 접으면 좋아요. ' : '위 그림처럼 날개를 양쪽으로 펴서 날려요. ') : ''}${P.tip}</div>
         <div class="row"><button class="btn" data-act="play">${sec.emoji} 바로 ${sec.verb}</button>
         <button class="btn ghost" data-act="refold">다시 접기</button><button class="btn ghost" data-act="mine">보관함</button></div>`);
       $('#craftName').addEventListener('input', (e) => { craft.name = e.target.value.trim() || '이름 없는 작품'; saveCrafts(); });
