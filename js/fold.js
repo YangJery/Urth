@@ -283,7 +283,7 @@
     const sec = G.SECTIONS[opt.section];
     const inner = G.innerColor(color);
     let layers = sheet(W, H);
-    let gi = guide ? 0 : -1, folds = 0, creaseMode = false, topMode = false, wings = [], history = [];
+    let gi = guide ? 0 : -1, folds = 0, creaseMode = false, topMode = false, snapOn = true, wings = [], history = [];
     let drag = null, anim = null, toast = null, time = 0, snaps = [];
     const view = { cx: W / 2, cy: H / 2, s: 1, sx: 0, sy: 0 };
 
@@ -315,6 +315,7 @@
       snaps = out;
     }
     function snap(p, px, avoid) {
+      if (!snapOn) return null;
       let best = null, bd = px / view.s;
       for (const s of snaps) {
         if (avoid && G.dist(s, avoid) < 4) continue;
@@ -331,7 +332,7 @@
         : topMode ? (wings.length === 1 && opt.section === 'plane' ? '한쪽 날개 완료! 🔄 뒤집어서 반대쪽 날개도 접어요' : wings.length === 2 && opt.section === 'plane' ? '양쪽 날개 완료! 날릴 때 날개는 저절로 펴져요' : '맨 위 장만 접혀요. 잡아서 끌어 보세요')
         : guide && gi >= guide.steps.length ? '도안 끝! 더 접어도 되고, ✅ 완성을 눌러도 돼요'
         : opt.section === 'plane' && folds > 0 ? '반으로 접었다면, 날개는 📄 윗장만을 켜고 접으세요' : '아무 곳이나 잡아 끌어서 마음대로 접어 보세요';
-      ui.fold({ text, sub: (st ? '도안 ' + (gi + 1) + '/' + guide.steps.length + ' · ' : '') + '접은 횟수 ' + folds + (creaseMode ? ' · 접었다 펴기 켜짐' : '') + (topMode ? ' · 윗장만 접기 켜짐' : ''), canUndo: history.length > 0, crease: creaseMode, top: topMode });
+      ui.fold({ text, sub: (st ? '도안 ' + (gi + 1) + '/' + guide.steps.length + ' · ' : '') + '접은 횟수 ' + folds + (creaseMode ? ' · 접었다 펴기 켜짐' : '') + (topMode ? ' · 윗장만 접기 켜짐' : ''), canUndo: history.length > 0, crease: creaseMode, top: topMode, snap: snapOn });
     }
     refreshUi();
 
@@ -392,6 +393,7 @@
       refreshUi();
     };
     this.toggleCrease = function () { creaseMode = !creaseMode; refreshUi(); };
+    this.toggleSnap = function () { snapOn = !snapOn; say(snapOn ? '자석 켬: 모서리에 딱 붙어요' : '자석 끔: 원하는 곳에 자유롭게', true); refreshUi(); };
     this.toggleTop = function () { topMode = !topMode; refreshUi(); };
     this.finish = function () {
       if (anim || !onDone) return;
@@ -413,12 +415,12 @@
       if (anim) return;
       const p = toPaper(x, y);
       if (type === 'down') {
-        const s = snap(p, 20);
+        const s = snap(p, 16);
         if (s) drag = { p: s, q: s, snapped: null };
         else if (layers.some((L) => inside(L.poly, p))) drag = { p, q: p, snapped: null };
         else say('종이를 잡고 끌어 보세요', false);
       } else if (type === 'move' && drag) {
-        const s = snap(p, 14, drag.p);
+        const s = snap(p, 8, drag.p);
         drag.q = s || p;
         drag.snapped = s;
       } else if (type === 'up' && drag) {
@@ -560,7 +562,7 @@
       if (drag) {
         // 붙는 점들과 접는 선
         ctx.fillStyle = 'rgba(255,255,255,0.55)';
-        snaps.forEach((s) => { ctx.beginPath(); ctx.arc(s[0], s[1], 3 * px, 0, 7); ctx.fill(); });
+        if (snapOn) snaps.forEach((s) => { ctx.beginPath(); ctx.arc(s[0], s[1], 3 * px, 0, 7); ctx.fill(); });
         if (G.dist(drag.p, drag.q) > 3) {
           const ln = bisector(drag.p, drag.q);
           ctx.strokeStyle = 'rgba(255,90,77,0.9)';

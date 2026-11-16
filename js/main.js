@@ -147,6 +147,7 @@
       $('#foldUndo').disabled = !o.canUndo;
       $('#foldCrease').classList.toggle('on', o.crease);
       $('#foldTop').classList.toggle('on', o.top);
+      $('#foldSnap').classList.toggle('on', o.snap);
     },
     hud(o) {
       setText('hudA', o.a); setText('hudB', o.b); setText('hudInfo', o.info || '');
@@ -207,7 +208,7 @@
   }
   $('#foldQuit').addEventListener('click', () => { app.tab = 'new'; renderSection(); });
   const foldBtn = (id, fn) => $(id).addEventListener('click', () => app.scene && app.scene[fn] && app.scene[fn]());
-  foldBtn('#foldUndo', 'undo'); foldBtn('#foldFlip', 'flip'); foldBtn('#foldCrease', 'toggleCrease'); foldBtn('#foldTop', 'toggleTop'); foldBtn('#foldDone', 'finish');
+  foldBtn('#foldUndo', 'undo'); foldBtn('#foldFlip', 'flip'); foldBtn('#foldCrease', 'toggleCrease'); foldBtn('#foldTop', 'toggleTop'); foldBtn('#foldSnap', 'toggleSnap'); foldBtn('#foldDone', 'finish');
 
   /* ---------- 플레이 ---------- */
   function startPlay(craft) {
