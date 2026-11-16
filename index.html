@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>종이접기 챔피언</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<!-- 홈 -->
+<main id="home" class="screen">
+  <header class="hero">
+    <div class="hero-icon">🗞️</div>
+    <h1>종이접기 챔피언</h1>
+    <p>직접 접고, 직접 날리고, 띄우고, 달려서 기록을 겨뤄요!</p>
+  </header>
+  <label class="namebox">선수 이름
+    <input id="playerName" maxlength="10" placeholder="이름을 적어 주세요" autocomplete="off">
+  </label>
+  <div id="sectionCards" class="cards"></div>
+  <footer class="foot">기록은 이 기기에 저장돼요</footer>
+</main>
+
+<!-- 섹션 (격납고 / 새로 접기 / 순위표) -->
+<main id="section" class="screen" hidden>
+  <header class="bar">
+    <button class="btn ghost" id="secBack">← 처음으로</button>
+    <h2 id="secTitle"></h2>
+  </header>
+  <nav class="tabs" id="secTabs">
+    <button data-tab="new">새로 접기</button>
+    <button data-tab="mine">보관함</button>
+    <button data-tab="rank">순위표</button>
+  </nav>
+  <section id="tab-new" class="tab">
+    <div class="palette" id="palette"></div>
+    <div id="modelList" class="list"></div>
+  </section>
+  <section id="tab-mine" class="tab" hidden><div id="craftList" class="list"></div></section>
+  <section id="tab-rank" class="tab" hidden>
+    <div class="seg" id="rankSeg"></div>
+    <ol id="rankList" class="rank"></ol>
+  </section>
+</main>
+
+<!-- 접기 / 플레이 무대 -->
+<div id="stage" hidden>
+  <canvas id="cv"></canvas>
+  <div id="foldbar" class="topbar" hidden>
+    <button class="btn small" id="foldQuit">✕</button>
+    <div class="foldinfo">
+      <div class="foldstep"><span id="foldStep"></span><span id="foldAcc"></span></div>
+      <div id="foldText"></div>
+    </div>
+    <button class="btn small" id="foldUndo">↩</button>
+  </div>
+  <div id="hud" class="topbar" hidden>
+    <button class="btn small" id="playQuit">✕</button>
+    <div class="hudstats"><b id="hudA"></b><b id="hudB"></b><span id="hudInfo"></span></div>
+    <div class="gauge" id="gauge" hidden><span id="gaugeLabel"></span><div class="gbar"><i id="gaugeFill"></i></div></div>
+  </div>
+  <div id="hint" hidden></div>
+  <div id="overlay" hidden><div class="card" id="overlayCard"></div></div>
+</div>
+
+<script src="js/util.js"></script>
+<script src="js/models.js"></script>
+<script src="js/fold.js"></script>
+<script src="js/plane.js"></script>
+<script src="js/boat.js"></script>
+<script src="js/car.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
