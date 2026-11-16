@@ -69,13 +69,70 @@
     const stay = [], move = [];
     for (const L of layers) {
       const st = clip(L.poly, a, b, -s);
-      if (st.length > 2 && area(st) > 0.5) stay.push({ poly: st, m: L.m, flip: L.flip, creases: L.creases });
+      if (st.length > 2 && area(st) > 0.5) stay.push({ poly: st, m: L.m, flip: L.flip, creases: L.creases, tag: L.tag });
       const mv = clip(L.poly, a, b, s);
       if (mv.length > 2 && area(mv) > 0.5) {
-        move.push({ poly: mv.map((p) => reflect(p, a, b)), m: compose(R, L.m), flip: !L.flip, creases: L.creases });
+        move.push({ poly: mv.map((p) => reflect(p, a, b)), m: compose(R, L.m), flip: !L.flip, creases: L.creases, tag: L.tag });
       }
     }
     return stay.concat(move.reverse());
+  }
+
+  // 두 조각이 펼친 종이에서 변을 맞대고 있는가 (= 접힌 선으로 이어져 있는가)
+  function sharesEdge(A, B) {
+    for (let i = 0; i < A.length; i++) {
+      const a0 = A[i], a1 = A[(i + 1) % A.length];
+      const dx = a1[0] - a0[0], dy = a1[1] - a0[1], len = Math.hypot(dx, dy);
+      if (len < 1) continue;
+      for (let j = 0; j < B.length; j++) {
+        const b0 = B[j], b1 = B[(j + 1) % B.length];
+        if (Math.abs(side(b0, a0, a1)) / len > 0.6 || Math.abs(side(b1, a0, a1)) / len > 0.6) continue;
+        const t0 = ((b0[0] - a0[0]) * dx + (b0[1] - a0[1]) * dy) / len, t1 = ((b1[0] - a0[0]) * dx + (b1[1] - a0[1]) * dy) / len;
+        if (Math.min(len, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1)) > 1.5) return true;
+      }
+    }
+    return false;
+  }
+  function near(poly, p) { // 경계에서 조금 벗어나도 안쪽으로 본다
+    let pos = false, neg = false;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      const d = side(p, a, b) / (Math.hypot(b[0] - a[0], b[1] - a[1]) || 1);
+      if (d > 2) pos = true; else if (d < -2) neg = true;
+      if (pos && neg) return false;
+    }
+    return true;
+  }
+  /* 윗장만 접기: 잡은 곳의 맨 위 조각과, 접는 쪽에서 종이로 이어진 조각들만 넘긴다.
+     (반으로 접은 비행기의 한쪽 날개만 접을 때) */
+  function foldTop(layers, a, b, P) {
+    const s = Math.sign(side(P, a, b));
+    if (!s) return { layers, moved: [] };
+    const parts = layers.map((L) => {
+      const mv = clip(L.poly, a, b, s);
+      return mv.length > 2 && area(mv) > 0.5 ? { mv, pre: mv.map((q) => invApply(L.m, q)) } : null;
+    });
+    let seed = -1;
+    for (let i = layers.length - 1; i >= 0; i--) if (parts[i] && near(layers[i].poly, P)) { seed = i; break; }
+    if (seed < 0) return { layers: foldLayers(layers, a, b, P), moved: [], all: true };
+    const inSet = new Set([seed]), queue = [seed];
+    while (queue.length) {
+      const i = queue.pop();
+      for (let j = 0; j < layers.length; j++) {
+        if (!parts[j] || inSet.has(j) || !sharesEdge(parts[i].pre, parts[j].pre)) continue;
+        inSet.add(j); queue.push(j);
+      }
+    }
+    const R = reflMatrix(a, b), stay = [], move = [];
+    let all = true;
+    layers.forEach((L, i) => {
+      if (!inSet.has(i)) { stay.push(L); if (parts[i]) all = false; return; }
+      const st = clip(L.poly, a, b, -s);
+      if (st.length > 2 && area(st) > 0.5) stay.push({ poly: st, m: L.m, flip: L.flip, creases: L.creases, tag: L.tag });
+      move.push({ poly: parts[i].mv.map((q) => reflect(q, a, b)), m: compose(R, L.m), flip: !L.flip, creases: L.creases, tag: L.tag });
+    });
+    move.reverse();
+    return { layers: stay.concat(move), moved: move, all };
   }
   function bisector(H, Q) {
     const mx = (H[0] + Q[0]) / 2, my = (H[1] + Q[1]) / 2;
@@ -84,10 +141,10 @@
   }
   const sheet = (W, H) => [{ poly: [[0, 0], [W, 0], [W, H], [0, H]], m: [1, 0, 0, 1, 0, 0], flip: false, creases: [] }];
   const r1 = (v) => Math.round(v * 10) / 10;
-  const toShape = (layers) => layers.map((L) => ({ p: L.poly.map((q) => [r1(q[0]), r1(q[1])]), f: L.flip ? 1 : 0 }));
+  const toShape = (layers) => layers.map((L) => { const o = { p: L.poly.map((q) => [r1(q[0]), r1(q[1])]), f: L.flip ? 1 : 0 }; if (L.tag) o.t = L.tag; return o; });
 
   G.fold = {
-    foldLayers, reflect, bisector,
+    foldLayers, foldTop, reflect, bisector,
     // 도안대로 정확히 접었을 때의 모양
     guideShape(model) {
       let L = sheet(model.paper[0], model.paper[1]);
@@ -126,7 +183,7 @@
       const i0 = Math.max(0, Math.floor((lx0 - x0) / cell)), i1 = Math.min(nx - 1, Math.floor((lx1 - x0) / cell));
       const j0 = Math.max(0, Math.floor((ly0 - y0) / cell)), j1 = Math.min(ny - 1, Math.floor((ly1 - y0) / cell));
       for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
-        if (inside(L.p, [x0 + (i + 0.5) * cell, y0 + (j + 0.5) * cell])) t[j * nx + i]++;
+        if (inside(L.p, [x0 + (i + 0.5) * cell, y0 + (j + 0.5) * cell])) t[j * nx + i] += L.k || 1;
       }
     }
     let n = 0, m = 0, sx = 0, sy = 0, ax = 0, ay = 0;
@@ -194,7 +251,7 @@
     const sec = G.SECTIONS[opt.section];
     const inner = G.innerColor(color);
     let layers = sheet(W, H);
-    let gi = guide ? 0 : -1, folds = 0, creaseMode = false, history = [];
+    let gi = guide ? 0 : -1, folds = 0, creaseMode = false, topMode = false, wings = [], history = [];
     let drag = null, anim = null, toast = null, time = 0, snaps = [];
     const view = { cx: W / 2, cy: H / 2, s: 1, sx: 0, sy: 0 };
 
@@ -238,8 +295,11 @@
     function refreshUi() {
       rebuildSnaps();
       const st = cur();
-      const text = st ? st.text : guide && gi >= guide.steps.length ? '도안 끝! 더 접어도 되고, ✅ 완성을 눌러도 돼요' : '아무 곳이나 잡아 끌어서 마음대로 접어 보세요';
-      ui.fold({ text, sub: (st ? '도안 ' + (gi + 1) + '/' + guide.steps.length + ' · ' : '') + '접은 횟수 ' + folds + (creaseMode ? ' · 접었다 펴기 켜짐' : ''), canUndo: history.length > 0, crease: creaseMode });
+      const text = st ? st.text
+        : topMode ? (wings.length === 1 && opt.section === 'plane' ? '한쪽 날개 완료! 🔄 뒤집어서 반대쪽 날개도 접어요' : wings.length === 2 && opt.section === 'plane' ? '양쪽 날개 완료! 날릴 때 날개는 저절로 펴져요' : '맨 위 장만 접혀요. 잡아서 끌어 보세요')
+        : guide && gi >= guide.steps.length ? '도안 끝! 더 접어도 되고, ✅ 완성을 눌러도 돼요'
+        : opt.section === 'plane' && folds > 0 ? '반으로 접었다면, 날개는 📄 윗장만을 켜고 접으세요' : '아무 곳이나 잡아 끌어서 마음대로 접어 보세요';
+      ui.fold({ text, sub: (st ? '도안 ' + (gi + 1) + '/' + guide.steps.length + ' · ' : '') + '접은 횟수 ' + folds + (creaseMode ? ' · 접었다 펴기 켜짐' : '') + (topMode ? ' · 윗장만 접기 켜짐' : ''), canUndo: history.length > 0, crease: creaseMode, top: topMode });
     }
     refreshUi();
 
@@ -252,14 +312,24 @@
       const match = st && G.dist(P, st.handle) < 0.09 * W && G.dist(Q, target(st)) < 0.1 * W;
       const asCrease = creaseMode || (match && st.crease);
       const ln = bisector(P, Q);
-      const next = foldLayers(layers, ln[0], ln[1], P);
+      const top = topMode && !asCrease ? foldTop(layers, ln[0], ln[1], P) : null;
+      const next = top ? top.layers : foldLayers(layers, ln[0], ln[1], P);
       if (next.length > 320) return say('너무 잘게 접혀요. 다른 곳을 접어 보세요', false);
-      history.push({ layers, gi, folds });
+      history.push({ layers, gi, folds, wings });
       if (asCrease) {
         anim = { base: layers, from: Q, handle: P, t: 0 };
         G.sfx.crease();
       } else {
-        layers = next;
+        // 윗장만 접은 마지막 한두 번은 '날개'로 기억해 두었다가 날릴 때 편다
+        const wing = top && !top.all && wings.length < 2 && !top.moved.some((L) => L.tag);
+        if (wing) {
+          wings = wings.concat([{ a: ln[0], b: ln[1] }]);
+          top.moved.forEach((L) => { L.tag = wings.length; });
+          layers = next;
+        } else {
+          wings = [];
+          layers = next.map((L) => (L.tag ? { poly: L.poly, m: L.m, flip: L.flip, creases: L.creases } : L));
+        }
         folds++;
         G.sfx.fold();
       }
@@ -271,7 +341,7 @@
     this.undo = function () {
       if (!history.length || anim) return;
       const h = history.pop();
-      layers = h.layers; gi = h.gi; folds = h.folds; drag = null;
+      layers = h.layers; gi = h.gi; folds = h.folds; wings = h.wings; drag = null;
       G.sfx.crease();
       refreshUi();
     };
@@ -280,19 +350,21 @@
       let x0 = 1e9, x1 = -1e9;
       layers.forEach((L) => L.poly.forEach((p) => { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); }));
       const a = [(x0 + x1) / 2, 0], b = [(x0 + x1) / 2, 1], R = reflMatrix(a, b);
-      history.push({ layers, gi, folds });
-      layers = layers.map((L) => ({ poly: L.poly.map((p) => reflect(p, a, b)), m: compose(R, L.m), flip: !L.flip, creases: L.creases })).reverse();
+      history.push({ layers, gi, folds, wings });
+      wings = wings.map((wl) => ({ a: reflect(wl.a, a, b), b: reflect(wl.b, a, b) }));
+      layers = layers.map((L) => ({ poly: L.poly.map((p) => reflect(p, a, b)), m: compose(R, L.m), flip: !L.flip, creases: L.creases, tag: L.tag })).reverse();
       if (cur()) gi = -1; // 뒤집으면 도안 안내는 끝
       G.sfx.fold();
       say('뒤집었어요', true);
       refreshUi();
     };
     this.toggleCrease = function () { creaseMode = !creaseMode; refreshUi(); };
+    this.toggleTop = function () { topMode = !topMode; refreshUi(); };
     this.finish = function () {
       if (anim || !onDone) return;
       const cb = onDone;
       onDone = null;
-      cb(toShape(layers));
+      cb(toShape(layers), wings.map((wl) => ({ a: wl.a.map(r1), b: wl.b.map(r1) })));
     };
     // 테스트/시연용: 도안의 현재 단계를 오차 e 로 접기, 또는 임의의 두 점으로 접기
     this.auto = function (e) {
@@ -350,7 +422,7 @@
       }
       if (drag && G.dist(drag.q, drag.p) > 3) {
         const ln = bisector(drag.p, drag.q);
-        return foldLayers(layers, ln[0], ln[1], drag.p);
+        return topMode && !creaseMode ? foldTop(layers, ln[0], ln[1], drag.p).layers : foldLayers(layers, ln[0], ln[1], drag.p);
       }
       return layers;
     }
@@ -370,7 +442,7 @@
       for (let y = 0; y < h; y += 40) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
       ctx.stroke();
 
-      const top = 128, bottom = 96;
+      const top = 128, bottom = 118;
       view.s = Math.min((w - 48) / W, (h - top - bottom) / H) * 0.84;
       view.sx = w / 2;
       view.sy = top + (h - top - bottom) / 2;

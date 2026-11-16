@@ -5,10 +5,35 @@
 (function () {
   const G = window.G;
   const U = 0.00105; // 종이 단위 → m (폭 200 = 21cm)
-  const GRAV = 9.8, START_H = 1.8, CM0 = 0.022, CQ = 2.0;
+  const GRAV = 9.8, START_H = 1.8, CQ = 2.0;
   const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
-  G.PHYS.plane = function (a) {
+  /* 반으로 접고 날개를 접어 내린 비행기는 날개를 90° 펴서 날린다.
+     위에서 본 모양 = 한쪽 날개는 그대로, 반대쪽 날개는 접은 선 너머로 펼치고,
+     몸통(용골)은 접은 선 위로 납작하게 모은다(질량은 그대로). */
+  G.flightShape = function (craft) {
+    const w = craft.wings || [];
+    if (!w.length || !craft.shape.some((L) => L.t)) return craft.shape;
+    const R = G.fold.reflect, l1 = w[0], l2 = w[1] || w[0];
+    const dx = l1.b[0] - l1.a[0], dy = l1.b[1] - l1.a[1], dd = dx * dx + dy * dy;
+    const squash = (q) => { const u = ((q[0] - l1.a[0]) * dx + (q[1] - l1.a[1]) * dy) / dd, fx = l1.a[0] + u * dx, fy = l1.a[1] + u * dy; return [fx + (q[0] - fx) * 0.05, fy + (q[1] - fy) * 0.05]; };
+    const body = [], wing = [];
+    craft.shape.forEach((L) => {
+      if (L.t === 1) wing.push({ p: L.p, f: L.f });
+      else if (L.t === 2) wing.push({ p: L.p.map((q) => R(q, l2.a, l2.b)), f: 1 - L.f });
+      else body.push({ p: L.p.map(squash), f: L.f, k: 20 });
+    });
+    return wing.concat(body);
+  };
+
+  // 비행 모양 분석. 용골(몸통)은 좌우 대칭 판정에서 뺀다
+  G.planeAnalysis = function (craft) {
+    const shape = G.flightShape(craft), keel = shape !== craft.shape, A = G.analyze(shape);
+    if (keel) { const W = G.analyze(shape.filter((L) => !L.k)); A.asym = W.asym; A.lean = W.lean; }
+    return { shape, keel, A, P: G.PHYS.plane(A, keel) };
+  };
+
+  G.PHYS.plane = function (a, keel) {
     const S = a.area * U * U, b = Math.max(a.w * U, 0.01), c = S / b;
     const AR = (b * b) / S;
     let sw = 0, sy = 0;
@@ -22,23 +47,25 @@
       cla: (2 * Math.PI * AR) / (AR + 2), ki: Math.min(0.6, 1 / (Math.PI * 0.8 * AR)),
       c, d: (np - a.mcy) * U, dPost: (a.acy - a.mcy) * U,
       ry2: Math.max(a.iyy * U * U, 0.0012),
-      cd0: 0.04 + 0.2 * a.asym, bank: G.clamp(a.asym * 5 + Math.abs(a.lean) * 6, 0, 1.0),
+      cd0: 0.04 + 0.2 * a.asym, bank: G.clamp(a.asym * 5 + Math.abs(a.lean) * 6, 0, 1.0) * (keel ? 0.6 : 1), // 용골이 있으면 덜 기운다
     };
     const sm = P.d / c; // 정적 여유
+    // 꼬리를 살짝 올려 맞춘 트림: 앞이 무거울수록 더 올리지만 한계가 있다
+    P.cm0 = G.clamp(P.cla * 0.12 * sm, 0.022, 0.08);
     P.bars = [
       { label: '날개 넓이', v: G.clamp(a.area / a.mass, 0, 1) },
       { label: '앞쪽 무게', v: G.clamp(0.5 + sm * 2.5, 0, 1) },
       { label: '좌우 대칭', v: G.clamp(1 - a.asym * 8, 0, 1) },
     ];
     P.tip = sm < 0.01 ? '무게중심이 뒤쪽이라 공중에서 뒤집히기 쉬워요. 앞쪽을 더 접어 무겁게 해 보세요.'
-      : sm > 0.3 ? '앞이 아주 무거워 화살처럼 빨리 떨어져요. 세게, 위로 쏘세요.'
+      : sm > 0.45 ? '앞이 아주 무거워 화살처럼 빨리 떨어져요. 세게, 위로 쏘세요.'
       : a.asym > 0.06 ? '좌우가 달라 한쪽으로 휘어 날아요.'
       : a.area / a.mass > 0.6 ? '날개가 넓어 천천히 오래 떠요. 살살 쏘는 게 좋아요.' : '균형이 좋아요. 곧게 잘 날 거예요!';
     return P;
   };
 
   G.PlaneScene = function (craft, ui, onEnd) {
-    const A = G.analyze(craft.shape), P = G.PHYS.plane(A);
+    const pa = G.planeAnalysis(craft), fshape = pa.shape, A = pa.A, P = pa.P;
     const S = { phase: 'aim', x: 0, y: START_H, vx: 0, vy: 0, th: 0.2, om: 0, psi: 0, t: 0, aim: null, endT: 0, camY: 0, time: 0, trail: [], lastStretch: 0 };
     const rnd = G.rng(20240917);
     const thermals = [];
@@ -68,7 +95,7 @@
       S.vy += (-D * Math.sin(gam) + Lv * Math.cos(gam) - GRAV) * dt;
       // 피치: 트림 모멘트 - 수직력×(공력중심-무게중심) , 감쇠는 암시적으로
       const cn = cl * ca + cd * sa, arm = G.lerp(P.d, P.dPost, k);
-      const torque = (q * (CM0 * P.c - cn * arm)) / P.ry2;
+      const torque = (q * (P.cm0 * P.c - cn * arm)) / P.ry2;
       const damp = (P.K * v * P.c * P.c * CQ) / (2 * P.ry2) + 0.5;
       S.om = G.clamp((S.om + torque * dt) / (1 + damp * dt), -30, 30);
       S.th += S.om * dt;
@@ -243,7 +270,7 @@
       ctx.rotate(Math.PI / 2);
       ctx.scale(k, k);
       ctx.translate(-A.mcx, -A.mcy);
-      G.drawShape(ctx, craft.shape, craft.color, 1 / k);
+      G.drawShape(ctx, fshape, craft.color, 1 / k);
       ctx.restore();
     };
   };

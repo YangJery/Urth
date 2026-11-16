@@ -129,6 +129,7 @@ body {
 #foldtools {
   position: absolute; left: 10px; right: 10px; bottom: calc(14px + env(safe-area-inset-bottom)); display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
 }
+#foldtools .btn { padding: 8px 10px; font-size: 14px; }
 #foldtools .btn.on { background: #4b4239; color: #fffdf7; }
 .item.free { background: #fff1c4; }
 .item .big-emoji { font-size: 50px; text-align: center; }

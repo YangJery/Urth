@@ -144,6 +144,7 @@
       setText('foldText', o.text);
       $('#foldUndo').disabled = !o.canUndo;
       $('#foldCrease').classList.toggle('on', o.crease);
+      $('#foldTop').classList.toggle('on', o.top);
     },
     hud(o) {
       setText('hudA', o.a); setText('hudB', o.b); setText('hudInfo', o.info || '');
@@ -183,19 +184,20 @@
     const sec = G.SECTIONS[app.section], color = app.color, section = app.section;
     const paper = guide ? guide.paper : app.square ? [240, 240] : sec.paper;
     openStage('fold');
-    app.scene = new G.FoldScene({ section, paper, color, guide }, ui, (shape) => {
+    app.scene = new G.FoldScene({ section, paper, color, guide }, ui, (shape, wings) => {
       const n = app.crafts.filter((c) => c.section === section).length + 1;
-      const craft = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), section, name: (guide ? guide.name : '내 ' + sec.name.replace('종이 ', '')) + ' ' + n + '호', color, shape, best: {} };
+      const craft = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), section, name: (guide ? guide.name : '내 ' + sec.name.replace('종이 ', '')) + ' ' + n + '호', color, shape, wings, best: {} };
       app.crafts.unshift(craft);
       saveCrafts();
-      const P = G.PHYS[section](G.analyze(shape));
+      const pa = section === 'plane' ? G.planeAnalysis(craft) : null, opened = pa && pa.keel;
+      const P = pa ? pa.P : G.PHYS[section](G.analyze(shape));
       G.sfx.fanfare();
       app.pending = { craft, guide };
       overlay(`<h2>완성! 🎉</h2>
         <canvas data-shape="${craft.id}" data-c="${color}"></canvas>
         <input id="craftName" maxlength="14" value="${G.esc(craft.name)}" aria-label="작품 이름">
         ${bars(P.bars)}
-        <div class="tip">💡 ${P.tip}</div>
+        <div class="tip">💡 ${opened ? (wings.length < 2 ? '날개가 한쪽만 접혔어요. 뒤집어서 반대쪽도 접으면 좋아요. ' : '날개를 양쪽으로 펴서 날려요. ') : ''}${P.tip}</div>
         <div class="row"><button class="btn" data-act="play">${sec.emoji} 바로 ${sec.verb}</button>
         <button class="btn ghost" data-act="refold">다시 접기</button><button class="btn ghost" data-act="mine">보관함</button></div>`);
       $('#craftName').addEventListener('input', (e) => { craft.name = e.target.value.trim() || '이름 없는 작품'; saveCrafts(); });
@@ -203,7 +205,7 @@
   }
   $('#foldQuit').addEventListener('click', () => { app.tab = 'new'; renderSection(); });
   const foldBtn = (id, fn) => $(id).addEventListener('click', () => app.scene && app.scene[fn] && app.scene[fn]());
-  foldBtn('#foldUndo', 'undo'); foldBtn('#foldFlip', 'flip'); foldBtn('#foldCrease', 'toggleCrease'); foldBtn('#foldDone', 'finish');
+  foldBtn('#foldUndo', 'undo'); foldBtn('#foldFlip', 'flip'); foldBtn('#foldCrease', 'toggleCrease'); foldBtn('#foldTop', 'toggleTop'); foldBtn('#foldDone', 'finish');
 
   /* ---------- 플레이 ---------- */
   function startPlay(craft) {
