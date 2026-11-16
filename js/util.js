@@ -52,7 +52,7 @@
   const LB_MAX = 20;
   G.lb = {
     get(section, metric) {
-      return G.store.get('lb:' + section + ':' + metric, []);
+      return G.store.get('lb2:' + section + ':' + metric, []);
     },
     // 순위(1부터)를 돌려준다. 순위권 밖이면 0
     add(section, metric, entry) {
@@ -60,7 +60,7 @@
       list.push(entry);
       list.sort((a, b) => b.value - a.value);
       const rank = list.indexOf(entry) + 1;
-      G.store.set('lb:' + section + ':' + metric, list.slice(0, LB_MAX));
+      G.store.set('lb2:' + section + ':' + metric, list.slice(0, LB_MAX));
       return rank <= LB_MAX ? rank : 0;
     },
   };
@@ -69,3 +69,21 @@
   // 접기 정밀도가 성능에 미치는 배율 (0.6 ~ 1.0)
   G.eff = (q) => 0.6 + 0.4 * q;
 })();
+
+/* 시드 고정 난수: 모든 선수가 같은 코스에서 겨루도록 */
+window.G.rng = function (seed) {
+  let a = seed >>> 0;
+  return function (lo, hi) {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    const r = ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    return lo == null ? r : lo + r * (hi - lo);
+  };
+};
+window.G.smooth = function (a, b, x) {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+window.G.PHYS = {};

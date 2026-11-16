@@ -1,54 +1,67 @@
-/* 화면 전환, 격납고, 순위표, 게임 루프 */
+/* 화면 전환, 보관함, 순위표, 게임 루프 */
 (function () {
   const G = window.G;
   const $ = (s) => document.querySelector(s);
   const cv = $('#cv'), ctx = cv.getContext('2d');
 
   const app = {
-    section: null, tab: 'new', color: G.COLORS[0], rankMetric: 0,
-    scene: null, crafts: G.store.get('crafts', []), name: G.store.get('name', ''),
+    section: null, tab: 'new', color: G.COLORS[0], rankMetric: 0, square: false,
+    scene: null, crafts: G.store.get('crafts2', []), name: G.store.get('name', ''), pending: null,
   };
   const playerName = () => (app.name || '').trim() || '이름 없는 선수';
-  const saveCrafts = () => G.store.set('crafts', app.crafts);
+  const saveCrafts = () => G.store.set('crafts2', app.crafts);
   const fmt = (v, m) => v.toFixed(m.digits) + ' ' + m.unit;
+  const bars = (list) => list.map((b) => `<div class="stat">${b.label}<i><b style="width:${Math.round(b.v * 100)}%"></b></i></div>`).join('');
 
+  function leaveScene() {
+    if (app.scene && app.scene.stop) app.scene.stop();
+    app.scene = null;
+  }
   function showScreen(id) {
     ['home', 'section', 'stage'].forEach((s) => ($('#' + s).hidden = s !== id));
-    if (id !== 'stage') app.scene = null;
+    if (id !== 'stage') leaveScene();
     window.scrollTo(0, 0);
   }
 
+  // 접힌 모양 썸네일
   function paintThumbs(root) {
-    root.querySelectorAll('canvas[data-m]').forEach((c) => {
-      const r = window.devicePixelRatio || 1;
-      const w = c.clientWidth || 110, h = c.clientHeight || 80;
+    root.querySelectorAll('canvas[data-shape]').forEach((c) => {
+      const shape = c.dataset.shape === 'guide' ? G.fold.guideShape(G.findModel(c.dataset.s, c.dataset.m)) : (app.crafts.find((k) => k.id === c.dataset.shape) || {}).shape;
+      if (!shape) return;
+      const r = window.devicePixelRatio || 1, w = c.clientWidth || 110, h = c.clientHeight || 80;
       c.width = w * r; c.height = h * r;
       const x = c.getContext('2d');
+      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+      shape.forEach((L) => L.p.forEach((q) => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); }));
+      const k = Math.min((w - 12) / (x1 - x0), (h - 12) / (y1 - y0));
       x.scale(r, r);
-      x.translate(w / 2, h / 2 + (c.dataset.s === 'plane' ? 8 : c.dataset.s === 'boat' ? 10 : 4));
-      if (c.dataset.s === 'plane') x.rotate(-0.12);
-      G.drawCraft(x, c.dataset.s, c.dataset.m, c.dataset.c, w * 0.8);
+      x.translate(w / 2, h / 2);
+      x.scale(k, k);
+      x.translate(-(x0 + x1) / 2, -(y0 + y1) / 2);
+      G.drawShape(x, shape, c.dataset.c, 1 / k);
     });
   }
 
   /* ---------- 홈 ---------- */
   function renderHome() {
     $('#playerName').value = app.name;
-    $('#sectionCards').innerHTML = Object.keys(G.SECTIONS).map((key, i) => {
+    $('#soundBtn').textContent = G.sfx.muted ? '🔇' : '🔊';
+    $('#sectionCards').innerHTML = Object.keys(G.SECTIONS).map((key) => {
       const sec = G.SECTIONS[key], m = sec.metrics[0], top = G.lb.get(key, m.key)[0];
       return `<button class="sec-card" data-sec="${key}">
-        <canvas data-s="${key}" data-m="${G.MODELS[key][0].id}" data-c="${G.COLORS[[0, 5, 3][i]]}"></canvas>
-        <div><h3>${sec.emoji} ${sec.name}</h3><p>${sec.place}</p>
+        <div class="emoji">${sec.emoji}</div>
+        <div><h3>${sec.name}</h3><p>${sec.place}</p>
         <div class="best">${top ? '🏆 ' + G.esc(top.name) + ' · ' + fmt(top.value, m) : '아직 기록이 없어요. 첫 기록의 주인공이 되어 보세요!'}</div></div>
       </button>`;
     }).join('');
-    paintThumbs($('#sectionCards'));
     showScreen('home');
   }
   $('#playerName').addEventListener('input', (e) => { app.name = e.target.value; G.store.set('name', app.name); });
+  $('#soundBtn').addEventListener('click', () => { $('#soundBtn').textContent = G.sfx.toggle() ? '🔇' : '🔊'; G.sfx.click(); });
   $('#sectionCards').addEventListener('click', (e) => {
     const b = e.target.closest('[data-sec]');
     if (!b) return;
+    G.sfx.click();
     app.section = b.dataset.sec;
     app.tab = app.crafts.some((c) => c.section === app.section) ? 'mine' : 'new';
     renderSection();
@@ -63,20 +76,23 @@
 
     if (app.tab === 'new') {
       $('#palette').innerHTML = G.COLORS.map((c) => `<button style="background:${c}" data-color="${c}" class="${c === app.color ? 'on' : ''}" aria-label="색 ${c}"></button>`).join('');
-      $('#modelList').innerHTML = G.MODELS[key].map((m) => `<div class="item">
-        <canvas data-s="${key}" data-m="${m.id}" data-c="${app.color}"></canvas>
+      $('#modelList').innerHTML = `<div class="item free">
+        <div class="big-emoji">✂️</div>
+        <div><h3>자유 접기</h3><p>정해진 모양 없이 내 마음대로! 접힌 모양 그대로 무게중심·저항이 계산돼 움직여요.</p>
+        <div class="chips"><button data-square="0" class="${app.square ? '' : 'on'}">직사각형 종이</button><button data-square="1" class="${app.square ? 'on' : ''}">정사각형 종이</button></div>
+        <div class="row"><button class="btn" data-fold="free">자유롭게 접기</button></div></div>
+      </div><div class="sechead">도안 따라 접기 (중간부터 마음대로 바꿔도 돼요)</div>` + G.MODELS[key].map((m) => `<div class="item">
+        <canvas data-shape="guide" data-s="${key}" data-m="${m.id}" data-c="${app.color}"></canvas>
         <div><h3>${m.name}<span class="badge">${m.steps.length}번 접기</span></h3><p>${m.desc}</p>
-        ${['a', 'b', 'c'].map((k) => `<div class="stat">${sec.stats[k]}<i><b style="width:${m.stats[k] * 100}%"></b></i></div>`).join('')}
-        <div class="row" style="margin-top:8px"><button class="btn" data-fold="${m.id}">접기 시작</button></div></div>
+        <div class="row"><button class="btn ghost" data-fold="${m.id}">도안 보며 접기</button></div></div>
       </div>`).join('');
     } else if (app.tab === 'mine') {
       const mine = app.crafts.filter((c) => c.section === key);
       $('#craftList').innerHTML = mine.length ? mine.map((c) => {
-        const m = G.findModel(key, c.model);
         const best = sec.metrics.map((mt) => (c.best && c.best[mt.key] != null ? mt.label + ' ' + fmt(c.best[mt.key], mt) : '')).filter(Boolean).join(' · ');
         return `<div class="item">
-          <canvas data-s="${key}" data-m="${c.model}" data-c="${c.color}"></canvas>
-          <div><h3>${m.name}<span class="badge">${G.grade(c.q)}등급 · 정밀도 ${Math.round(c.q * 100)}%</span></h3>
+          <canvas data-shape="${c.id}" data-c="${c.color}"></canvas>
+          <div><h3>${G.esc(c.name)}</h3>
           <p>${best || '아직 기록이 없어요'}</p>
           <div class="row"><button class="btn" data-play="${c.id}">${sec.verb}</button><button class="btn ghost" data-del="${c.id}">버리기</button></div></div>
         </div>`;
@@ -86,21 +102,22 @@
       const mt = sec.metrics[app.rankMetric], list = G.lb.get(key, mt.key);
       $('#rankList').innerHTML = list.length ? list.map((e, i) => `<li class="${e.name === playerName() ? 'me' : ''}">
         <span class="no">${['🥇', '🥈', '🥉'][i] || i + 1}</span>
-        <span class="who">${G.esc(e.name)}<small>${G.esc(e.model)} · ${e.grade}등급 · ${e.date}</small></span>
+        <span class="who">${G.esc(e.name)}<small>${G.esc(e.model)} · ${e.date}</small></span>
         <span class="val">${fmt(e.value, mt)}</span></li>`).join('') : '<div class="empty">아직 기록이 없어요.</div>';
     }
     showScreen('section');
     paintThumbs($('#section'));
   }
-  $('#secBack').addEventListener('click', renderHome);
+  $('#secBack').addEventListener('click', () => { G.sfx.click(); renderHome(); });
   $('#secTabs').addEventListener('click', (e) => {
-    if (e.target.dataset.tab) { app.tab = e.target.dataset.tab; renderSection(); }
+    if (e.target.dataset.tab) { G.sfx.click(); app.tab = e.target.dataset.tab; renderSection(); }
   });
   $('#section').addEventListener('click', (e) => {
     const d = e.target.dataset;
     if (d.color) { app.color = d.color; renderSection(); }
-    else if (d.fold) startFold(G.findModel(app.section, d.fold));
-    else if (d.play) startPlay(app.crafts.find((c) => c.id === d.play));
+    else if (d.square) { app.square = d.square === '1'; renderSection(); }
+    else if (d.fold) { G.sfx.click(); startFold(d.fold === 'free' ? null : G.findModel(app.section, d.fold)); }
+    else if (d.play) { G.sfx.click(); startPlay(app.crafts.find((c) => c.id === d.play)); }
     else if (d.metric) { app.rankMetric = +d.metric; renderSection(); }
     else if (d.del) {
       if (confirm('이 작품을 버릴까요? (순위표 기록은 남아요)')) {
@@ -117,27 +134,32 @@
     if (last[id] !== v) { last[id] = v; $('#' + id).textContent = v; }
   }
   const ui = {
-    fold(step, total, text, acc, canUndo) {
-      setText('foldStep', step >= total ? '완성' : step + 1 + ' / ' + total + ' 단계');
-      setText('foldAcc', '정밀도 ' + Math.round(acc * 100) + '%');
-      setText('foldText', text);
-      $('#foldUndo').disabled = !canUndo;
+    fold(o) {
+      setText('foldSub', o.sub);
+      setText('foldText', o.text);
+      $('#foldUndo').disabled = !o.canUndo;
+      $('#foldCrease').classList.toggle('on', o.crease);
     },
     hud(o) {
       setText('hudA', o.a); setText('hudB', o.b); setText('hudInfo', o.info || '');
-      $('#gauge').hidden = o.gauge == null;
-      if (o.gauge != null) {
-        setText('gaugeLabel', o.gaugeLabel);
-        $('#gaugeFill').style.width = Math.round(o.gauge * 100) + '%';
-        $('#gaugeFill').className = o.gaugeBad ? 'bad' : '';
-      }
+      const gs = o.gauges || [], box = $('#gauges');
+      if (box.children.length !== gs.length) box.innerHTML = gs.map(() => '<div class="gauge"><span></span><div class="gbar"><i></i></div></div>').join('');
+      gs.forEach((g, i) => {
+        const el = box.children[i], key = 'g' + i;
+        if (last[key] !== g.label) { last[key] = g.label; el.firstChild.textContent = g.label; }
+        const f = el.querySelector('i');
+        f.style.width = Math.round(G.clamp(g.v, 0, 1) * 100) + '%';
+        f.style.background = g.color;
+      });
       $('#hint').hidden = !o.hint;
       if (o.hint) setText('hint', o.hint);
     },
   };
 
   function openStage(mode) {
-    $('#foldbar').hidden = mode !== 'fold';
+    leaveScene();
+    for (const k in last) delete last[k];
+    $('#foldbar').hidden = $('#foldtools').hidden = mode !== 'fold';
     $('#hud').hidden = mode !== 'play';
     $('#hint').hidden = true;
     $('#overlay').hidden = true;
@@ -152,44 +174,52 @@
   }
 
   /* ---------- 접기 ---------- */
-  function startFold(model) {
-    const color = app.color;
+  function startFold(guide) {
+    const sec = G.SECTIONS[app.section], color = app.color, section = app.section;
+    const paper = guide ? guide.paper : app.square ? [240, 240] : sec.paper;
     openStage('fold');
-    app.scene = new G.FoldScene(model, color, ui, (q) => {
-      const craft = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), section: model.section, model: model.id, color, q, best: {} };
+    app.scene = new G.FoldScene({ section, paper, color, guide }, ui, (shape) => {
+      const n = app.crafts.filter((c) => c.section === section).length + 1;
+      const craft = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), section, name: (guide ? guide.name : '내 ' + sec.name.replace('종이 ', '')) + ' ' + n + '호', color, shape, best: {} };
       app.crafts.unshift(craft);
       saveCrafts();
-      const sec = G.SECTIONS[model.section];
-      const msg = { S: '장인의 솜씨예요!', A: '아주 반듯해요!', B: '꽤 괜찮아요.', C: '조금 삐뚤지만 개성 있어요.' }[G.grade(q)];
-      overlay(`<h2>완성! 🎉</h2><p class="sub">${model.name} · ${msg}</p>
-        <canvas data-s="${model.section}" data-m="${model.id}" data-c="${color}"></canvas>
-        <div class="big">${G.grade(q)}</div><p class="sub">접기 정밀도 ${Math.round(q * 100)}% — 반듯할수록 성능이 좋아요</p>
+      const P = G.PHYS[section](G.analyze(shape));
+      G.sfx.fanfare();
+      app.pending = { craft, guide };
+      overlay(`<h2>완성! 🎉</h2>
+        <canvas data-shape="${craft.id}" data-c="${color}"></canvas>
+        <input id="craftName" maxlength="14" value="${G.esc(craft.name)}" aria-label="작품 이름">
+        ${bars(P.bars)}
+        <div class="tip">💡 ${P.tip}</div>
         <div class="row"><button class="btn" data-act="play">${sec.emoji} 바로 ${sec.verb}</button>
         <button class="btn ghost" data-act="refold">다시 접기</button><button class="btn ghost" data-act="mine">보관함</button></div>`);
-      app.pending = { craft, model };
+      $('#craftName').addEventListener('input', (e) => { craft.name = e.target.value.trim() || '이름 없는 작품'; saveCrafts(); });
     });
   }
   $('#foldQuit').addEventListener('click', () => { app.tab = 'new'; renderSection(); });
-  $('#foldUndo').addEventListener('click', () => app.scene && app.scene.undo && app.scene.undo());
+  const foldBtn = (id, fn) => $(id).addEventListener('click', () => app.scene && app.scene[fn] && app.scene[fn]());
+  foldBtn('#foldUndo', 'undo'); foldBtn('#foldFlip', 'flip'); foldBtn('#foldCrease', 'toggleCrease'); foldBtn('#foldDone', 'finish');
 
   /* ---------- 플레이 ---------- */
   function startPlay(craft) {
-    const model = G.findModel(craft.section, craft.model), sec = G.SECTIONS[craft.section];
+    const sec = G.SECTIONS[craft.section];
     const Scene = { plane: G.PlaneScene, boat: G.BoatScene, car: G.CarScene }[craft.section];
-    for (const k in last) delete last[k];
     openStage('play');
-    app.pending = { craft, model };
-    app.scene = new Scene(craft, model, ui, (res) => {
+    app.pending = { craft, guide: app.pending && app.pending.craft === craft ? app.pending.guide : null };
+    app.scene = new Scene(craft, ui, (res) => {
       const date = new Date().toISOString().slice(0, 10);
+      let record = false;
       const rows = sec.metrics.map((mt) => {
         const value = res[mt.key];
-        const rank = value > 0 ? G.lb.add(craft.section, mt.key, { name: playerName(), model: model.name, grade: G.grade(craft.q), value, date }) : 0;
+        const rank = value > 0 ? G.lb.add(craft.section, mt.key, { name: playerName(), model: craft.name, value, date }) : 0;
         const pb = craft.best[mt.key] == null || value > craft.best[mt.key];
         if (pb) craft.best[mt.key] = value;
+        if (rank === 1) record = true;
         return `<div><small>${mt.label}</small><b>${fmt(value, mt)}</b><em>${rank === 1 ? '🏆 1위 신기록!' : rank ? '순위표 ' + rank + '위' : pb ? '이 작품 최고 기록' : ''}</em></div>`;
       });
       saveCrafts();
-      overlay(`<h2>기록 측정 완료!</h2><p class="sub">${G.esc(playerName())} · ${model.name} (${G.grade(craft.q)}등급)</p>
+      if (record) G.sfx.fanfare();
+      overlay(`<h2>기록 측정 완료!</h2><p class="sub">${G.esc(playerName())} · ${G.esc(craft.name)}</p>
         <div class="res">${rows.join('')}</div>
         <div class="row"><button class="btn" data-act="play">한 번 더!</button>
         <button class="btn ghost" data-act="rank">순위표</button><button class="btn ghost" data-act="mine">보관함</button></div>`);
@@ -199,15 +229,17 @@
   $('#overlay').addEventListener('click', (e) => {
     const act = e.target.dataset.act;
     if (!act) return;
+    G.sfx.click();
     if (act === 'play') startPlay(app.pending.craft);
     else if (act === 'refold') {
       app.crafts = app.crafts.filter((c) => c !== app.pending.craft);
       saveCrafts();
-      startFold(app.pending.model);
+      startFold(app.pending.guide);
     } else { app.tab = act; renderSection(); }
   });
 
   /* ---------- 입력 ---------- */
+  window.addEventListener('pointerdown', () => G.sfx.unlock(), { capture: true });
   function pos(e) {
     const r = cv.getBoundingClientRect();
     return [e.clientX - r.left, e.clientY - r.top];

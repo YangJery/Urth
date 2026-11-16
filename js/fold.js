@@ -1,4 +1,4 @@
-/* 종이접기 엔진 + 접기 화면
+/* 종이접기 엔진 + 자유 접기 화면 + 접힌 모양 분석
    종이는 여러 겹의 볼록 다각형(layer)으로 표현한다. 접는 선을 기준으로
    한쪽에 있는 모든 겹을 잘라 반사시켜 맨 위에 쌓는다. */
 (function () {
@@ -11,7 +11,6 @@
     const t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy);
     return [2 * (a[0] + t * dx) - p[0], 2 * (a[1] + t * dy) - p[1]];
   }
-  // 반평면 클리핑: sgn*side >= 0 인 쪽만 남긴다
   function clip(poly, a, b, sgn) {
     const out = [];
     for (let i = 0; i < poly.length; i++) {
@@ -40,17 +39,27 @@
     const r = [2 * ux * ux - 1, 2 * ux * uy, 2 * ux * uy, 2 * uy * uy - 1];
     return [r[0], r[1], r[2], r[3], a[0] - (r[0] * a[0] + r[2] * a[1]), a[1] - (r[1] * a[0] + r[3] * a[1])];
   }
-  function compose(n, m) { // n ∘ m
+  function compose(n, m) {
     return [
       n[0] * m[0] + n[2] * m[1], n[1] * m[0] + n[3] * m[1],
       n[0] * m[2] + n[2] * m[3], n[1] * m[2] + n[3] * m[3],
       n[0] * m[4] + n[2] * m[5] + n[4], n[1] * m[4] + n[3] * m[5] + n[5],
     ];
   }
+  const apply = (m, p) => [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]];
   function invApply(m, p) {
     const det = m[0] * m[3] - m[1] * m[2];
     const x = p[0] - m[4], y = p[1] - m[5];
     return [(m[3] * x - m[2] * y) / det, (-m[1] * x + m[0] * y) / det];
+  }
+  function inside(poly, p) {
+    let pos = false, neg = false;
+    for (let i = 0; i < poly.length; i++) {
+      const s = side(p, poly[i], poly[(i + 1) % poly.length]);
+      if (s > 1e-9) pos = true; else if (s < -1e-9) neg = true;
+      if (pos && neg) return false;
+    }
+    return true;
   }
 
   function foldLayers(layers, a, b, P) {
@@ -68,122 +77,265 @@
     }
     return stay.concat(move.reverse());
   }
-  // 점 H 를 Q 로 옮길 때 생기는 접는 선 (수직이등분선)
   function bisector(H, Q) {
     const mx = (H[0] + Q[0]) / 2, my = (H[1] + Q[1]) / 2;
     const dx = -(Q[1] - H[1]), dy = Q[0] - H[0], L = Math.hypot(dx, dy) || 1;
     return [[mx - (dx / L) * 2000, my - (dy / L) * 2000], [mx + (dx / L) * 2000, my + (dy / L) * 2000]];
   }
+  const sheet = (W, H) => [{ poly: [[0, 0], [W, 0], [W, H], [0, H]], m: [1, 0, 0, 1, 0, 0], flip: false, creases: [] }];
+  const r1 = (v) => Math.round(v * 10) / 10;
+  const toShape = (layers) => layers.map((L) => ({ p: L.poly.map((q) => [r1(q[0]), r1(q[1])]), f: L.flip ? 1 : 0 }));
 
-  G.fold = { foldLayers, reflect, bisector };
+  G.fold = {
+    foldLayers, reflect, bisector,
+    // 도안대로 정확히 접었을 때의 모양
+    guideShape(model) {
+      let L = sheet(model.paper[0], model.paper[1]);
+      model.steps.forEach((s) => { if (!s.crease) L = foldLayers(L, s.line[0], s.line[1], s.handle); });
+      return toShape(L);
+    },
+  };
+
+  /* ---------- 접힌 모양 그리기 (현재 변환 좌표 = 종이 단위) ---------- */
+  G.innerColor = (color) => (color === '#efe9dc' ? '#ffffff' : G.shade(color, 0.72));
+  G.drawShape = function (ctx, shape, color, lw) {
+    const inner = G.innerColor(color);
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = 'rgba(70,50,30,0.45)';
+    for (const L of shape) {
+      ctx.beginPath();
+      L.p.forEach((q, i) => (i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])));
+      ctx.closePath();
+      ctx.fillStyle = L.f ? color : inner;
+      ctx.fill();
+      ctx.stroke();
+    }
+  };
+
+  /* ---------- 모양 분석: 겹 수 지도를 만들어 면적·무게중심·관성·대칭을 구한다 ---------- */
+  G.analyze = function (shape) {
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    shape.forEach((L) => L.p.forEach((q) => { x0 = Math.min(x0, q[0]); y0 = Math.min(y0, q[1]); x1 = Math.max(x1, q[0]); y1 = Math.max(y1, q[1]); }));
+    const w = x1 - x0, h = y1 - y0, cell = Math.max(w, h) / 72;
+    const nx = Math.max(1, Math.ceil(w / cell)), ny = Math.max(1, Math.ceil(h / cell));
+    const t = new Float32Array(nx * ny);
+    for (const L of shape) {
+      let lx0 = 1e9, ly0 = 1e9, lx1 = -1e9, ly1 = -1e9;
+      L.p.forEach((q) => { lx0 = Math.min(lx0, q[0]); ly0 = Math.min(ly0, q[1]); lx1 = Math.max(lx1, q[0]); ly1 = Math.max(ly1, q[1]); });
+      const i0 = Math.max(0, Math.floor((lx0 - x0) / cell)), i1 = Math.min(nx - 1, Math.floor((lx1 - x0) / cell));
+      const j0 = Math.max(0, Math.floor((ly0 - y0) / cell)), j1 = Math.min(ny - 1, Math.floor((ly1 - y0) / cell));
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+        if (inside(L.p, [x0 + (i + 0.5) * cell, y0 + (j + 0.5) * cell])) t[j * nx + i]++;
+      }
+    }
+    let n = 0, m = 0, sx = 0, sy = 0, ax = 0, ay = 0;
+    const colM = new Float32Array(nx), cols = [], rowsN = new Float32Array(ny);
+    for (let i = 0; i < nx; i++) cols.push({ front: 1e9, back: -1e9 });
+    const rows = [];
+    for (let j = 0; j < ny; j++) rows.push({ y: y0 + (j + 0.5) * cell, left: 1e9, right: -1e9 });
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const v = t[j * nx + i];
+      if (!v) continue;
+      const x = x0 + (i + 0.5) * cell, y = y0 + (j + 0.5) * cell;
+      n++; m += v; sx += v * x; sy += v * y; ax += x; ay += y;
+      colM[i] += v; rowsN[j]++;
+      cols[i].front = Math.min(cols[i].front, y - cell / 2);
+      cols[i].back = Math.max(cols[i].back, y + cell / 2);
+      rows[j].left = Math.min(rows[j].left, x - cell / 2);
+      rows[j].right = Math.max(rows[j].right, x + cell / 2);
+    }
+    const mcx = sx / m, mcy = sy / m, acx = ax / n, acy = ay / n;
+    let ixx = 0, iyy = 0, axx = 0;
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      const v = t[j * nx + i];
+      if (!v) continue;
+      const x = x0 + (i + 0.5) * cell, y = y0 + (j + 0.5) * cell;
+      ixx += v * (x - mcx) * (x - mcx); iyy += v * (y - mcy) * (y - mcy); axx += (x - acx) * (x - acx);
+    }
+    // 좌우 대칭: 무게중심을 지나는 세로축 기준으로 열 질량 분포를 비교
+    let diff = 0;
+    for (let i = 0; i < nx; i++) {
+      const xm = 2 * mcx - (x0 + (i + 0.5) * cell), f = (xm - x0) / cell - 0.5;
+      const k = Math.floor(f), u = f - k;
+      const a = k >= 0 && k < nx ? colM[k] : 0, b = k + 1 >= 0 && k + 1 < nx ? colM[k + 1] : 0;
+      diff += Math.abs(colM[i] - (a * (1 - u) + b * u));
+    }
+    // 앞쪽(위 25%) / 오른쪽(25%) 이 얼마나 꽉 차 있는지 → 뭉툭함
+    let topFill = 0, rightFill = 0;
+    const qy = Math.max(1, Math.round(ny * 0.25)), qx = Math.max(1, Math.round(nx * 0.25));
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+      if (!t[j * nx + i]) continue;
+      if (j < qy) topFill++;
+      if (i >= nx - qx) rightFill++;
+    }
+    const c2 = cell * cell;
+    return {
+      x0, y0, w, h, cell, nx, ny, cols, rows,
+      area: n * c2, mass: m * c2, nbar: m / n, mcx, mcy, acx, acy,
+      ixx: ixx / m, iyy: iyy / m, axx: axx / n,
+      asym: diff / (2 * m / 1), lean: (acx - mcx) / Math.max(w, 1),
+      topFill: topFill / (qy * nx), rightFill: rightFill / (qx * ny),
+    };
+  };
+  G.hull = function (pts) {
+    const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lo = [], up = [];
+    for (const q of p) { while (lo.length > 1 && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
+    for (let i = p.length - 1; i >= 0; i--) { const q = p[i]; while (up.length > 1 && cr(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); }
+    return lo.slice(0, -1).concat(up.slice(0, -1));
+  };
 
   /* ---------- 접기 화면 ---------- */
-  G.FoldScene = function (model, color, ui, onDone) {
-    const W = model.paper[0], H = model.paper[1];
-    const TOL = 0.17 * W, PERFECT = 0.035 * W;
-    const inner = color === '#efe9dc' ? '#ffffff' : G.shade(color, 0.72);
-    let layers = [{ poly: [[0, 0], [W, 0], [W, H], [0, H]], m: [1, 0, 0, 1, 0, 0], flip: false, creases: [] }];
-    let step = 0, scores = [], history = [];
-    let drag = null, anim = null, toast = null, time = 0, finished = false, doneT = 0;
+  const MAX_FOLDS = 16;
+  G.FoldScene = function (opt, ui, onDone) {
+    const W = opt.paper[0], H = opt.paper[1], color = opt.color, guide = opt.guide || null;
+    const sec = G.SECTIONS[opt.section];
+    const inner = G.innerColor(color);
+    let layers = sheet(W, H);
+    let gi = guide ? 0 : -1, folds = 0, creaseMode = false, history = [];
+    let drag = null, anim = null, toast = null, time = 0, snaps = [];
     const view = { cx: W / 2, cy: H / 2, s: 1, sx: 0, sy: 0 };
 
-    const cur = () => model.steps[step];
-    const target = () => reflect(cur().handle, cur().line[0], cur().line[1]);
-    const avg = () => (scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 1);
+    const cur = () => (guide && gi >= 0 && gi < guide.steps.length ? guide.steps[gi] : null);
+    const target = (st) => reflect(st.handle, st.line[0], st.line[1]);
+
+    function rebuildSnaps() {
+      const seen = new Set(), out = [];
+      const add = (p) => {
+        const k = Math.round(p[0]) + ',' + Math.round(p[1]);
+        if (!seen.has(k)) { seen.add(k); out.push(p); }
+      };
+      for (const L of layers) {
+        const n = L.poly.length;
+        for (let i = 0; i < n; i++) {
+          const a = L.poly[i], b = L.poly[(i + 1) % n];
+          add(a);
+          add([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+          // 접은 자국과 변이 만나는 점
+          for (const c of L.creases) {
+            const c0 = apply(L.m, c[0]), c1 = apply(L.m, c[1]);
+            const sa = side(a, c0, c1), sb = side(b, c0, c1);
+            if ((sa > 0 && sb < 0) || (sa < 0 && sb > 0)) { const u = sa / (sa - sb); add([a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u]); }
+          }
+        }
+      }
+      const st = cur();
+      if (st) { add(st.handle); add(target(st)); }
+      snaps = out;
+    }
+    function snap(p, px, avoid) {
+      let best = null, bd = px / view.s;
+      for (const s of snaps) {
+        if (avoid && G.dist(s, avoid) < 4) continue;
+        const d = G.dist(s, p);
+        if (d < bd) { bd = d; best = s; }
+      }
+      return best;
+    }
 
     function refreshUi() {
-      if (finished) ui.fold(model.steps.length, model.steps.length, '완성!', avg(), false);
-      else ui.fold(step, model.steps.length, cur().text, avg(), history.length > 0);
+      rebuildSnaps();
+      const st = cur();
+      const text = st ? st.text : guide && gi >= guide.steps.length ? '도안 끝! 더 접어도 되고, ✅ 완성을 눌러도 돼요' : '아무 곳이나 잡아 끌어서 마음대로 접어 보세요';
+      ui.fold({ text, sub: (st ? '도안 ' + (gi + 1) + '/' + guide.steps.length + ' · ' : '') + '접은 횟수 ' + folds + (creaseMode ? ' · 접었다 펴기 켜짐' : ''), canUndo: history.length > 0, crease: creaseMode });
     }
     refreshUi();
 
-    function toPaper(x, y) {
-      return [(x - view.sx) / view.s + view.cx, (y - view.sy) / view.s + view.cy];
-    }
-    function say(text, good) {
-      toast = { text, good, t: 0 };
-    }
+    const toPaper = (x, y) => [(x - view.sx) / view.s + view.cx, (y - view.sy) / view.s + view.cy];
+    const say = (text, good) => { toast = { text, good, t: 0 }; };
 
-    function accept(Q) {
-      const st = cur(), T = target();
-      const err = G.dist(Q, T);
-      const useQ = err < PERFECT ? T : Q;
-      const score = err < PERFECT ? 1 : G.clamp(1 - (err - PERFECT) / (TOL - PERFECT), 0, 1);
-      history.push({ layers, scores: scores.slice() });
-      scores.push(score);
-      say(score >= 0.99 ? '완벽해요! ✨' : score > 0.6 ? '좋아요!' : '조금 삐뚤어요…', score > 0.6);
-      if (st.crease) {
-        anim = { base: layers, from: useQ, handle: st.handle, t: 0 };
+    function commit(P, Q) {
+      if (folds >= MAX_FOLDS && !creaseMode) return say('더는 접을 수 없을 만큼 두꺼워요!', false);
+      const st = cur();
+      const match = st && G.dist(P, st.handle) < 0.09 * W && G.dist(Q, target(st)) < 0.1 * W;
+      const asCrease = creaseMode || (match && st.crease);
+      const ln = bisector(P, Q);
+      const next = foldLayers(layers, ln[0], ln[1], P);
+      if (next.length > 320) return say('너무 잘게 접혀요. 다른 곳을 접어 보세요', false);
+      history.push({ layers, gi, folds });
+      if (asCrease) {
+        anim = { base: layers, from: Q, handle: P, t: 0 };
+        G.sfx.crease();
       } else {
-        const ln = bisector(st.handle, useQ);
-        layers = foldLayers(layers, ln[0], ln[1], st.handle);
-        advance();
+        layers = next;
+        folds++;
+        G.sfx.fold();
       }
-    }
-    function advance() {
-      step++;
-      if (step >= model.steps.length) {
-        finished = true;
-        doneT = 0;
-      }
+      if (match) { gi++; say(G.dist(Q, target(st)) < 1 ? '딱 맞아요! ✨' : '좋아요!', true); }
+      else if (st) say('도안과 다르게 접었어요 (↩ 로 되돌릴 수 있어요)', false);
       refreshUi();
     }
 
     this.undo = function () {
-      if (!history.length || anim || finished) return;
+      if (!history.length || anim) return;
       const h = history.pop();
-      layers = h.layers;
-      scores = h.scores;
-      step--;
-      drag = null;
+      layers = h.layers; gi = h.gi; folds = h.folds; drag = null;
+      G.sfx.crease();
       refreshUi();
     };
-    // 테스트/시연용: 현재 단계를 오차 e(종이 폭 대비)로 자동 접기
+    this.flip = function () {
+      if (anim) return;
+      let x0 = 1e9, x1 = -1e9;
+      layers.forEach((L) => L.poly.forEach((p) => { x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]); }));
+      const a = [(x0 + x1) / 2, 0], b = [(x0 + x1) / 2, 1], R = reflMatrix(a, b);
+      history.push({ layers, gi, folds });
+      layers = layers.map((L) => ({ poly: L.poly.map((p) => reflect(p, a, b)), m: compose(R, L.m), flip: !L.flip, creases: L.creases })).reverse();
+      if (cur()) gi = -1; // 뒤집으면 도안 안내는 끝
+      G.sfx.fold();
+      say('뒤집었어요', true);
+      refreshUi();
+    };
+    this.toggleCrease = function () { creaseMode = !creaseMode; refreshUi(); };
+    this.finish = function () {
+      if (anim || !onDone) return;
+      const cb = onDone;
+      onDone = null;
+      cb(toShape(layers));
+    };
+    // 테스트/시연용: 도안의 현재 단계를 오차 e 로 접기, 또는 임의의 두 점으로 접기
     this.auto = function (e) {
-      if (finished || anim) return;
-      const T = target();
-      accept([T[0] + (e || 0) * W, T[1]]);
+      const st = cur();
+      if (!st || anim) return;
+      const T = target(st);
+      commit(st.handle, [T[0] + (e || 0) * W, T[1]]);
       if (anim) anim.t = 1;
     };
+    this.foldPts = function (P, Q) { commit(P, Q); if (anim) anim.t = 1; };
 
     this.pointer = function (type, x, y) {
-      if (finished || anim) return;
+      if (anim) return;
       const p = toPaper(x, y);
       if (type === 'down') {
-        if (G.dist(p, cur().handle) * view.s < 64) drag = { q: p };
-        else say('빨간 점을 잡고 끌어 보세요', false);
+        const s = snap(p, 20);
+        if (s) drag = { p: s, q: s, snapped: null };
+        else if (layers.some((L) => inside(L.poly, p))) drag = { p, q: p, snapped: null };
+        else say('종이를 잡고 끌어 보세요', false);
       } else if (type === 'move' && drag) {
-        drag.q = p;
+        const s = snap(p, 14, drag.p);
+        drag.q = s || p;
+        drag.snapped = s;
       } else if (type === 'up' && drag) {
-        const q = drag.q;
+        const d = drag;
         drag = null;
-        if (G.dist(q, target()) <= TOL) accept(q);
-        else if (G.dist(q, cur().handle) > 8) say('점선 동그라미까지 끌어다 놓으세요', false);
+        if (G.dist(d.p, d.q) > 8) commit(d.p, d.q);
       }
     };
 
     this.update = function (dt) {
       time += dt;
-      if (toast && (toast.t += dt) > 1.3) toast = null;
+      if (toast && (toast.t += dt) > 1.6) toast = null;
       if (anim) {
         anim.t += dt / 0.45;
         if (anim.t >= 1) {
-          // 접었다 편 자국을 각 겹의 원래 종이 좌표로 남긴다
           const ln = bisector(anim.handle, anim.from);
           layers = anim.base.map((L) => ({
             poly: L.poly, m: L.m, flip: L.flip,
             creases: L.creases.concat([[invApply(L.m, ln[0]), invApply(L.m, ln[1])]]),
           }));
           anim = null;
-          advance();
-        }
-      }
-      if (finished) {
-        doneT += dt;
-        if (doneT > 1.5 && onDone) {
-          const cb = onDone;
-          onDone = null;
-          cb(avg());
+          refreshUi();
         }
       }
     };
@@ -196,13 +348,12 @@
         const ln = bisector(anim.handle, q);
         return foldLayers(anim.base, ln[0], ln[1], anim.handle);
       }
-      if (drag && G.dist(drag.q, cur().handle) > 3) {
-        const ln = bisector(cur().handle, drag.q);
-        return foldLayers(layers, ln[0], ln[1], cur().handle);
+      if (drag && G.dist(drag.q, drag.p) > 3) {
+        const ln = bisector(drag.p, drag.q);
+        return foldLayers(layers, ln[0], ln[1], drag.p);
       }
       return layers;
     }
-
     function path(ctx, poly) {
       ctx.beginPath();
       poly.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
@@ -210,7 +361,6 @@
     }
 
     this.draw = function (ctx, w, h) {
-      // 작업대
       ctx.fillStyle = '#3f7d6b';
       ctx.fillRect(0, 0, w, h);
       ctx.strokeStyle = 'rgba(255,255,255,0.09)';
@@ -220,29 +370,39 @@
       for (let y = 0; y < h; y += 40) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
       ctx.stroke();
 
-      const top = 120, bottom = 30;
-      view.s = Math.min((w - 48) / W, (h - top - bottom) / H) * 0.86;
+      const top = 128, bottom = 96;
+      view.s = Math.min((w - 48) / W, (h - top - bottom) / H) * 0.84;
       view.sx = w / 2;
       view.sy = top + (h - top - bottom) / 2;
 
-      // 종이가 화면 가운데 오도록 천천히 따라간다 (끄는 중에는 고정)
+      let bx0 = 1e9, by0 = 1e9, bx1 = -1e9, by1 = -1e9;
+      layers.forEach((L) => L.poly.forEach((p) => { bx0 = Math.min(bx0, p[0]); by0 = Math.min(by0, p[1]); bx1 = Math.max(bx1, p[0]); by1 = Math.max(by1, p[1]); }));
       if (!drag && !anim) {
-        let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
-        const pts = [];
-        layers.forEach((L) => L.poly.forEach((p) => pts.push(p)));
-        if (!finished) pts.push(target(), cur().handle);
-        pts.forEach((p) => { x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]); });
-        view.cx += ((x0 + x1) / 2 - view.cx) * 0.08;
-        view.cy += ((y0 + y1) / 2 - view.cy) * 0.08;
+        view.cx += ((bx0 + bx1) / 2 - view.cx) * 0.08;
+        view.cy += ((by0 + by1) / 2 - view.cy) * 0.08;
       }
 
-      const fin = finished ? G.clamp(doneT / 0.9, 0, 1) : 0;
       ctx.save();
       ctx.translate(view.sx, view.sy);
       ctx.scale(view.s, view.s);
       ctx.translate(-view.cx, -view.cy);
-      ctx.globalAlpha = 1 - fin;
       const px = 1 / view.s;
+
+      // 방향 안내
+      ctx.fillStyle = 'rgba(255,255,255,0.75)';
+      ctx.font = '700 ' + 13 * px + 'px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(sec.frontLabel, (bx0 + bx1) / 2, by0 - 12 * px);
+      if (sec.front === 'right') {
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = 2 * px;
+        ctx.setLineDash([4 * px, 6 * px]);
+        ctx.beginPath(); ctx.moveTo(bx0 - 20 * px, by1 + 9 * px); ctx.lineTo(bx1 + 20 * px, by1 + 9 * px); ctx.stroke();
+        ctx.setLineDash([]);
+        const wr = 9 * px;
+        [0.2, 0.8].forEach((k) => { ctx.beginPath(); ctx.arc(G.lerp(bx0, bx1, k), by1, wr, 0, Math.PI); ctx.stroke(); });
+      }
+
       const list = shown();
       ctx.lineJoin = 'round';
       list.forEach((L, i) => {
@@ -271,79 +431,56 @@
         }
       });
 
-      // 안내선
-      if (!finished && !anim) {
-        const st = cur(), T = target(), Hp = st.handle;
-        const a = st.line[0], b = st.line[1];
+      const st = cur();
+      if (st && !anim && !drag) {
+        const T = target(st), Hp = st.handle, a = st.line[0], b = st.line[1];
         const ex = (b[0] - a[0]) * 0.12, ey = (b[1] - a[1]) * 0.12;
         ctx.strokeStyle = '#ff5a4d';
         ctx.lineWidth = 2.2 * px;
         ctx.setLineDash([9 * px, 7 * px]);
-        ctx.beginPath();
-        ctx.moveTo(a[0] - ex, a[1] - ey);
-        ctx.lineTo(b[0] + ex, b[1] + ey);
-        ctx.stroke();
-        // 목표 위치
+        ctx.beginPath(); ctx.moveTo(a[0] - ex, a[1] - ey); ctx.lineTo(b[0] + ex, b[1] + ey); ctx.stroke();
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 2.5 * px;
         ctx.setLineDash([5 * px, 5 * px]);
-        ctx.beginPath();
-        ctx.arc(T[0], T[1], 15 * px, 0, Math.PI * 2);
-        ctx.stroke();
+        ctx.beginPath(); ctx.arc(T[0], T[1], 15 * px, 0, Math.PI * 2); ctx.stroke();
         ctx.setLineDash([]);
-        if (!drag) {
-          // 손잡이 → 목표로 움직이는 안내 점
-          const k = (time * 0.7) % 1;
-          const e = k < 0.8 ? k / 0.8 : 1;
-          ctx.fillStyle = 'rgba(255,255,255,' + (k < 0.8 ? 0.85 : (1 - k) * 4) + ')';
-          ctx.beginPath();
-          ctx.arc(G.lerp(Hp[0], T[0], e), G.lerp(Hp[1], T[1], e), 6 * px, 0, Math.PI * 2);
-          ctx.fill();
-          const pulse = 11 + Math.sin(time * 5) * 2.5;
-          ctx.fillStyle = '#ff5a4d';
-          ctx.strokeStyle = '#fff';
-          ctx.lineWidth = 3 * px;
-          ctx.beginPath();
-          ctx.arc(Hp[0], Hp[1], pulse * px, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.stroke();
-        } else {
-          const near = G.dist(drag.q, T) <= TOL;
-          ctx.fillStyle = near ? '#7be08f' : '#ff5a4d';
-          ctx.strokeStyle = '#fff';
-          ctx.lineWidth = 3 * px;
-          ctx.beginPath();
-          ctx.arc(drag.q[0], drag.q[1], 10 * px, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.stroke();
+        const k = (time * 0.7) % 1, e = k < 0.8 ? k / 0.8 : 1;
+        ctx.fillStyle = 'rgba(255,255,255,' + (k < 0.8 ? 0.85 : (1 - k) * 4) + ')';
+        ctx.beginPath(); ctx.arc(G.lerp(Hp[0], T[0], e), G.lerp(Hp[1], T[1], e), 6 * px, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#ff5a4d';
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 3 * px;
+        ctx.beginPath(); ctx.arc(Hp[0], Hp[1], (11 + Math.sin(time * 5) * 2.5) * px, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      }
+      if (drag) {
+        // 붙는 점들과 접는 선
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        snaps.forEach((s) => { ctx.beginPath(); ctx.arc(s[0], s[1], 3 * px, 0, 7); ctx.fill(); });
+        if (G.dist(drag.p, drag.q) > 3) {
+          const ln = bisector(drag.p, drag.q);
+          ctx.strokeStyle = 'rgba(255,90,77,0.9)';
+          ctx.lineWidth = 2 * px;
+          ctx.setLineDash([9 * px, 7 * px]);
+          ctx.beginPath(); ctx.moveTo(ln[0][0], ln[0][1]); ctx.lineTo(ln[1][0], ln[1][1]); ctx.stroke();
+          ctx.setLineDash([]);
         }
+        ctx.fillStyle = drag.snapped ? '#7be08f' : '#ff5a4d';
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 3 * px;
+        ctx.beginPath(); ctx.arc(drag.q[0], drag.q[1], (drag.snapped ? 12 : 9) * px, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       }
       ctx.restore();
 
-      // 완성품 등장
-      if (finished) {
-        const pop = fin < 1 ? 0.6 + 0.5 * Math.sin(fin * Math.PI * 0.62) / Math.sin(Math.PI * 0.62) : 1.1 - 0.1 * G.clamp((doneT - 0.9) / 0.2, 0, 1);
-        ctx.save();
-        ctx.translate(w / 2, view.sy);
-        ctx.globalAlpha = fin;
-        ctx.scale(pop, pop);
-        ctx.rotate(Math.sin(time * 2) * 0.04);
-        G.drawCraft(ctx, model.section, model.id, color, Math.min(w * 0.6, 300));
-        ctx.restore();
-      }
-
       if (toast) {
-        const a = toast.t < 0.15 ? toast.t / 0.15 : toast.t > 1 ? (1.3 - toast.t) / 0.3 : 1;
+        const a = toast.t < 0.15 ? toast.t / 0.15 : toast.t > 1.3 ? (1.6 - toast.t) / 0.3 : 1;
         ctx.save();
         ctx.globalAlpha = Math.max(0, a);
-        ctx.font = '700 20px system-ui, sans-serif';
+        ctx.font = '700 16px system-ui, sans-serif';
         ctx.textAlign = 'center';
-        const tw = ctx.measureText(toast.text).width + 36;
-        const ty = h - 70 - toast.t * 10;
+        const tw = ctx.measureText(toast.text).width + 32;
+        const ty = h - bottom - 24;
         ctx.fillStyle = toast.good ? '#fff7df' : '#fff';
-        ctx.beginPath();
-        ctx.roundRect(w / 2 - tw / 2, ty - 26, tw, 40, 20);
-        ctx.fill();
+        ctx.beginPath(); ctx.roundRect(w / 2 - tw / 2, ty - 24, tw, 36, 18); ctx.fill();
         ctx.fillStyle = toast.good ? '#c9702a' : '#555';
         ctx.fillText(toast.text, w / 2, ty);
         ctx.restore();

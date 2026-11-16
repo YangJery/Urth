@@ -10,6 +10,7 @@
 <!-- 홈 -->
 <main id="home" class="screen">
   <header class="hero">
+    <button class="btn small sound" id="soundBtn" aria-label="소리">🔊</button>
     <div class="hero-icon">🗞️</div>
     <h1>종이접기 챔피언</h1>
     <p>직접 접고, 직접 날리고, 띄우고, 달려서 기록을 겨뤄요!</p>
@@ -49,21 +50,27 @@
   <div id="foldbar" class="topbar" hidden>
     <button class="btn small" id="foldQuit">✕</button>
     <div class="foldinfo">
-      <div class="foldstep"><span id="foldStep"></span><span id="foldAcc"></span></div>
+      <div class="foldstep"><span id="foldSub"></span></div>
       <div id="foldText"></div>
     </div>
-    <button class="btn small" id="foldUndo">↩</button>
+  </div>
+  <div id="foldtools" hidden>
+    <button class="btn small" id="foldUndo">↩ 되돌리기</button>
+    <button class="btn small" id="foldFlip">🔄 뒤집기</button>
+    <button class="btn small" id="foldCrease">〰 접었다 펴기</button>
+    <button class="btn" id="foldDone">✅ 완성</button>
   </div>
   <div id="hud" class="topbar" hidden>
     <button class="btn small" id="playQuit">✕</button>
     <div class="hudstats"><b id="hudA"></b><b id="hudB"></b><span id="hudInfo"></span></div>
-    <div class="gauge" id="gauge" hidden><span id="gaugeLabel"></span><div class="gbar"><i id="gaugeFill"></i></div></div>
+    <div class="gauges" id="gauges"></div>
   </div>
   <div id="hint" hidden></div>
   <div id="overlay" hidden><div class="card" id="overlayCard"></div></div>
 </div>
 
 <script src="js/util.js"></script>
+<script src="js/audio.js"></script>
 <script src="js/models.js"></script>
 <script src="js/fold.js"></script>
 <script src="js/plane.js"></script>
