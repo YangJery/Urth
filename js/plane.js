@@ -47,7 +47,9 @@
       cla: (2 * Math.PI * AR) / (AR + 2), ki: Math.min(0.6, 1 / (Math.PI * 0.8 * AR)),
       c, d: (np - a.mcy) * U, dPost: (a.acy - a.mcy) * U,
       ry2: Math.max(a.iyy * U * U, 0.0012),
-      cd0: 0.04 + 0.2 * a.asym, bank: G.clamp(a.asym * 5 + Math.abs(a.lean) * 6, 0, 1.0) * (keel ? 0.6 : 1), // 용골이 있으면 덜 기운다
+      cd0: 0.04 + 0.2 * a.asym,
+      // 좌우가 다르면 기운다. 손으로 접은 작은 오차(3% 이하)는 봐주고, 용골이 있으면 덜 기운다
+      bank: G.clamp(Math.max(0, a.asym - 0.03) * 3 + Math.abs(a.lean) * 3, 0, 0.6) * (keel ? 0.6 : 1),
     };
     const sm = P.d / c; // 정적 여유
     // 꼬리를 살짝 올려 맞춘 트림: 앞이 무거울수록 더 올리지만 한계가 있다
@@ -100,7 +102,8 @@
       S.om = G.clamp((S.om + torque * dt) / (1 + damp * dt), -30, 30);
       S.th += S.om * dt;
       // 비대칭 → 선회
-      S.psi += ((L * Math.sin(P.bank)) / Math.max(v, 1.5)) * dt;
+      // 옆으로 휘면 앞으로 나아가는 거리만 줄어든다 (되돌아오지는 않게 최대 약 70°)
+      S.psi = Math.min(1.2, S.psi + ((Math.abs(L) * Math.sin(P.bank)) / Math.max(v, 1.5)) * dt);
       S.x += S.vx * Math.cos(S.psi) * dt;
       S.y += S.vy * dt;
       S.t += dt;
@@ -112,7 +115,7 @@
       return { power: G.clamp(Math.hypot(dx, dy) / 140, 0, 1), ang: G.clamp(Math.atan2(-dy, dx), -0.35, 1.3) };
     }
     function launch(ang, power) {
-      const sp = G.lerp(3, 12, power); // 고무줄 새총
+      const sp = G.lerp(2.5, 9, power); // 고무줄 새총
       S.vx = Math.cos(ang) * sp;
       S.vy = Math.sin(ang) * sp;
       S.th = ang;
@@ -158,7 +161,7 @@
       ui.hud({
         a: Math.max(0, S.x).toFixed(1) + ' m', b: S.t.toFixed(1) + ' 초',
         hint: S.phase === 'aim' ? '고무줄을 뒤로 당겼다 놓으세요! 각도와 세기가 중요해요' : '',
-        info: S.phase === 'fly' ? '속도 ' + Math.hypot(S.vx, S.vy).toFixed(1) + ' m/s' : '',
+        info: S.phase !== 'fly' ? '바람 없음' : Math.cos(S.th) < 0 || S.vx < -0.3 ? '🔄 공중제비! 너무 세게·높이 쐈어요' : S.psi > 0.35 ? '↪ 한쪽으로 휘는 중' : '속도 ' + Math.hypot(S.vx, S.vy).toFixed(1) + ' m/s',
       });
     };
 
