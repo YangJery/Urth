@@ -120,10 +120,15 @@
     else if (d.play) { G.sfx.click(); startPlay(app.crafts.find((c) => c.id === d.play)); }
     else if (d.metric) { app.rankMetric = +d.metric; renderSection(); }
     else if (d.del) {
-      if (confirm('이 작품을 버릴까요? (순위표 기록은 남아요)')) {
+      // 한 번 더 눌러야 버려진다 (confirm 창을 쓸 수 없는 환경 대비)
+      if (e.target.dataset.sure) {
         app.crafts = app.crafts.filter((c) => c.id !== d.del);
         saveCrafts();
         renderSection();
+      } else {
+        e.target.dataset.sure = '1';
+        e.target.textContent = '정말 버리기?';
+        e.target.classList.add('red');
       }
     }
   });
