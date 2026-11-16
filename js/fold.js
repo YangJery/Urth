@@ -353,7 +353,8 @@
         G.sfx.crease();
       } else {
         // 윗장만 접은 마지막 한두 번은 '날개'로 기억해 두었다가 날릴 때 편다
-        const wing = top && !top.all && wings.length < 2 && !top.moved.some((L) => L.tag);
+        // (두 번째 날개는 그쪽에 남은 장이 없어 '전부 접기'와 같아지므로 따로 인정한다)
+        const wing = top && (!top.all || wings.length === 1) && top.moved.length && wings.length < 2 && !top.moved.some((L) => L.tag);
         if (wing) {
           wings = wings.concat([{ a: ln[0], b: ln[1] }]);
           top.moved.forEach((L) => { L.tag = wings.length; });
