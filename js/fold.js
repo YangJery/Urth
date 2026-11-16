@@ -93,6 +93,16 @@
     }
     return false;
   }
+  function overlaps(A, B) { // 볼록 다각형끼리 겹치는 넓이가 있는가
+    let cx = 0, cy = 0;
+    B.forEach((q) => { cx += q[0] / B.length; cy += q[1] / B.length; });
+    let r = A;
+    for (let i = 0; i < B.length && r.length > 2; i++) {
+      const b0 = B[i], b1 = B[(i + 1) % B.length];
+      r = clip(r, b0, b1, Math.sign(side([cx, cy], b0, b1)) || 1);
+    }
+    return r.length > 2 && area(r) > 2;
+  }
   function near(poly, p) { // 경계에서 조금 벗어나도 안쪽으로 본다
     let pos = false, neg = false;
     for (let i = 0; i < poly.length; i++) {
@@ -121,6 +131,28 @@
       for (let j = 0; j < layers.length; j++) {
         if (!parts[j] || inSet.has(j) || !sharesEdge(parts[i].pre, parts[j].pre)) continue;
         inSet.add(j); queue.push(j);
+      }
+    }
+    // 넘어가는 장들 사이(또는 위)에 끼어 겹쳐 있는 조각은 이어져 있지 않아도 함께 접힌다
+    let grew = true;
+    while (grew) {
+      grew = false;
+      let lo = Infinity;
+      inSet.forEach((i) => { lo = Math.min(lo, i); });
+      for (let j = lo + 1; j < layers.length; j++) {
+        if (!parts[j] || inSet.has(j)) continue;
+        let hit = false;
+        inSet.forEach((i) => { if (!hit && i < j && overlaps(parts[i].mv, parts[j].mv)) hit = true; });
+        if (!hit) continue;
+        inSet.add(j); grew = true;
+        const q2 = [j];
+        while (q2.length) {
+          const i = q2.pop();
+          for (let k = 0; k < layers.length; k++) {
+            if (!parts[k] || inSet.has(k) || !sharesEdge(parts[i].pre, parts[k].pre)) continue;
+            inSet.add(k); q2.push(k);
+          }
+        }
       }
     }
     const R = reflMatrix(a, b), stay = [], move = [];
